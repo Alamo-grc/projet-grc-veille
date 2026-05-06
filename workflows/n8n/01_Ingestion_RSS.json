@@ -1,0 +1,280 @@
+{
+  "name": "01_Ingestion_RSS",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "1274cc6e-f448-46af-83a0-5e7e460f9b16",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE sources\nSET derniere_ingestion = NOW(),\n    updated_at = NOW()\nWHERE actif = TRUE\nRETURNING code, derniere_ingestion;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1664,
+        0
+      ],
+      "id": "bc5a2f60-16fa-4809-850d-167e9a99099f",
+      "name": "MAJ derniere_ingestion source",
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        208,
+        0
+      ],
+      "id": "bc8558db-3a60-495f-8475-b25d3e4dc33b",
+      "name": "Trigger - Daily 08h"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, code, nom, rss_url, fiabilite, thematiques\nFROM sources\nWHERE actif = TRUE\n  AND rss_url IS NOT NULL;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        416,
+        0
+      ],
+      "id": "b10c91f0-a18b-455e-b3f5-a1ae0d6d1957",
+      "name": "Get sources actives",
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.rss_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; VeilleGRC-Bot/1.0; +https://hedgewood-conseil.fr/bot)"
+            },
+            {
+              "name": "Accept",
+              "value": "application/rss+xml, application/xml, text/xml, */*"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "3bf4f881-c407-419b-b1e3-daa3f30955d0",
+      "name": "Fetch RSS feed",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "options": {
+          "explicitArray": false,
+          "ignoreAttrs": false,
+          "normalize": true,
+          "normalizeTags": true,
+          "trim": true
+        }
+      },
+      "type": "n8n-nodes-base.xml",
+      "typeVersion": 1,
+      "position": [
+        832,
+        0
+      ],
+      "id": "7f97e7f4-552c-4828-9899-d6a48782aa53",
+      "name": "Parse XML to JSON"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "rss.channel.item",
+        "include": "allOtherFields",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "abec7f79-d4e6-4730-a781-5ae133a14799",
+      "name": "Split items"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// === Récupération de l'item courant ===\nconst item = $input.item.json;\n\nconst article = item['rss.channel.item'] || {};\nconst channel = item.rss?.channel || {};\n\n// === Extraction des champs de l'article ===\nconst titre = (article.title || '').trim();\nconst url = (article.link || '').trim();\nconst description = (article.description || '').trim();\n\n// === Mapping du code source basé sur l'URL de l'article ===\n// Méthode robuste : on matche sur le domaine de l'URL de l'article\nlet sourceCode = 'UNKNOWN';\nif (url.includes('cert.ssi.gouv.fr')) {\n  sourceCode = 'FR-CERT-01';\n} else if (url.includes('cnil.fr')) {\n  sourceCode = 'FR-CNIL-01';\n} else if (url.includes('cyber.gouv.fr')) {\n  sourceCode = 'FR-ANSSI-01';\n}\n\n// La date peut être dans pubdate, pubDate, isoDate selon les flux\nconst dateRaw = article.pubdate || article.pubDate || article.isoDate || null;\nlet datePublication = null;\nif (dateRaw) {\n  const d = new Date(dateRaw);\n  if (!isNaN(d.getTime())) {\n    datePublication = d.toISOString();\n  }\n}\n\n// === Calcul du hash SHA-256 du contenu ===\nconst crypto = require('crypto');\nconst contenuPourHash = `${titre}|${description}`;\nconst hashContenu = crypto.createHash('sha256').update(contenuPourHash).digest('hex');\n\n// === Détection de la langue ===\nconst langue = 'fr';\n\n// === Validation minimale ===\nif (!titre || !url || sourceCode === 'UNKNOWN') {\n  return null;\n}\n\n// === Construction de l'objet de sortie ===\nreturn {\n  json: {\n    source_code: sourceCode,\n    titre: titre,\n    url: url,\n    description: description.substring(0, 5000),\n    date_publication: datePublication,\n    langue: langue,\n    hash_contenu: hashContenu,\n    metadata: {\n      guid: article.guid?._ || article.guid || null,\n      source_title: channel.title || null,\n      ingested_at: new Date().toISOString()\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        0
+      ],
+      "id": "587756fb-65bb-4848-af3a-3f40395f21fe",
+      "name": "Normalize + Hash SHA-256"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO articles (\n  source_id,\n  titre,\n  url,\n  contenu,\n  date_publication,\n  langue,\n  hash_contenu,\n  metadata\n)\nSELECT\n  s.id,\n  '{{ $json.titre.replace(/'/g, \"''\") }}',\n  '{{ $json.url.replace(/'/g, \"''\") }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  {{ $json.date_publication ? \"'\" + $json.date_publication + \"'::timestamp\" : 'NULL' }},\n  '{{ $json.langue }}',\n  '{{ $json.hash_contenu }}',\n  '{{ JSON.stringify($json.metadata).replace(/'/g, \"''\") }}'::jsonb\nFROM sources s\nWHERE s.code = '{{ $json.source_code }}'\nON CONFLICT (url) DO NOTHING\nRETURNING id, titre, url;",
+        "options": {
+          "queryReplacement": "="
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1456,
+        0
+      ],
+      "id": "cc170d26-b23d-4375-9bb2-51e3b868fb3d",
+      "name": "Insert article",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger - Daily 08h": {
+      "main": [
+        [
+          {
+            "node": "Get sources actives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get sources actives": {
+      "main": [
+        [
+          {
+            "node": "Fetch RSS feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch RSS feed": {
+      "main": [
+        [
+          {
+            "node": "Parse XML to JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse XML to JSON": {
+      "main": [
+        [
+          {
+            "node": "Split items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split items": {
+      "main": [
+        [
+          {
+            "node": "Normalize + Hash SHA-256",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize + Hash SHA-256": {
+      "main": [
+        [
+          {
+            "node": "Insert article",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert article": {
+      "main": [
+        [
+          {
+            "node": "MAJ derniere_ingestion source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cf25c1d4-2806-4985-9a89-891b68b42cd6",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dfe707d3cf56b96f4ed1fe1af47c5a662ea5a358332e78a115ad70ea8239fced"
+  },
+  "id": "K21N0jgIxNHPiurY",
+  "tags": []
+}

@@ -1,0 +1,53 @@
+# ===========================
+# .gitignore — Projet VeilleGRC
+# Conforme ISO 27001 A.5.10
+# ===========================
+
+# === Secrets & configuration sensible ===
+.env
+*.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets/
+credentials/
+
+# === Données runtime (volumes Docker) ===
+postgres-data/
+n8n-data/
+backups/
+data/
+volumes/
+
+# === Logs ===
+*.log
+logs/
+
+# === Caches & builds ===
+node_modules/
+.cache/
+dist/
+build/
+
+# === Fichiers OS ===
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+
+# === Éditeurs ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === Dumps base de données ===
+*.sql.gz
+*.dump
+
+# === Outputs de tests temporaires ===
+test_output_*.txt
+test_output_*.json
