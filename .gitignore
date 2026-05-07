@@ -51,3 +51,15 @@ $RECYCLE.BIN/
 # === Outputs de tests temporaires ===
 test_output_*.txt
 test_output_*.json
+# === KeePass et secrets bureautiques ===
+*.kdbx
+*.kdb
+
+# === Livrables générés (digests, exports) ===
+digest-*.html
+digests/output/
+exports/
+
+# === Fichiers de test temporaires (ajout) ===
+test_*.sh
+debug_*.txt

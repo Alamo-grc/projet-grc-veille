@@ -61,8 +61,8 @@ Sources surveillées :
 | **Sprint 1** | Gouvernance et documentation cadre | ✅ Complété |
 | **Sprint 2** | Pipeline d'ingestion RSS automatisé | ✅ Complété, en production |
 | **Sprint 3.1** | Agent classifieur (Claude Haiku 4.5) | ✅ Complété, en production |
-| **Sprint 3.2** | Agent synthétiseur (Claude Sonnet 4.6) | 🚧 En conception |
-| **Sprint 3.3** | Digest hebdomadaire avec validation humaine | 📋 Planifié |
+| **Sprint 3.2** | Agent synthétiseur (Claude Sonnet 4.6) |  ✅ Complété, en production |
+| **Sprint 3.3** | Digest hebdomadaire avec architecture multi-temporelle | ✅ Complété, en production |
 | **Sprint 4** | Industrialisation (HTTPS, monitoring, sauvegardes) | 📋 Planifié |
 
 ### Métriques actuelles
