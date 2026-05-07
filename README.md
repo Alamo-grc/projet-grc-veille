@@ -221,7 +221,7 @@ Ce projet est actuellement en mode **privé**. Une licence sera définie lors du
 
 ## 👤 Auteur
 
-**Mounir [Nom]** — Consultant en transition vers la GRC freelance
+**Mounir El ouafidi — Consultant en transition vers la GRC freelance
 - Spécialisations : ISO 27001, ISO 42001, RGPD, AI Act
 - Cibles géographiques : France, Suisse, MENA
 - LinkedIn : [À compléter]
