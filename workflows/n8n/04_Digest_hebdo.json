@@ -1,0 +1,167 @@
+{
+  "name": "04_Digest_hebdo",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "6c6e5140-4022-4763-9418-92d58795b39a",
+      "name": "Trigger - Lundi 06h00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ponderation AS (\n  SELECT\n    s.id AS synthese_id,\n    a.id AS article_id,\n    a.titre,\n    a.url,\n    a.date_publication,\n    src.code AS source_code,\n    src.nom AS source_nom,\n    c.criticite,\n    c.thematiques,\n    s.tldr,\n    s.contenu_synthese,\n    s.citations,\n    s.confiance,\n    s.citations_verifiees,\n    s.cout_euros,\n    CASE c.criticite\n      WHEN 'critique' THEN 100\n      WHEN 'elevee' THEN 50\n      WHEN 'moyenne' THEN 20\n      WHEN 'faible' THEN 5\n    END AS poids_criticite,\n    CASE \n      WHEN src.code LIKE 'FR-ANSSI%' THEN 1.0\n      WHEN src.code LIKE 'FR-CNIL%' THEN 1.0\n      WHEN src.code LIKE 'FR-CERT%' THEN 1.0\n      ELSE 0.6\n    END AS poids_fiabilite,\n    CASE \n      WHEN a.date_publication > NOW() - INTERVAL '1 day' THEN 1.0\n      WHEN a.date_publication > NOW() - INTERVAL '3 days' THEN 0.8\n      WHEN a.date_publication > NOW() - INTERVAL '7 days' THEN 0.5\n      WHEN a.date_publication > NOW() - INTERVAL '14 days' THEN 0.3\n      ELSE 0.2\n    END AS poids_recence\n  FROM syntheses s\n  JOIN articles a ON a.id = s.article_id\n  JOIN sources src ON src.id = a.source_id\n  JOIN classifications c ON c.article_id = a.id\n  WHERE s.synthese_impossible = FALSE\n    AND a.date_publication > NOW() - INTERVAL '30 days'\n),\nsection_semaine AS (\n  SELECT \n    *,\n    'actu_semaine' AS section,\n    1 AS ordre_section,\n    ROUND(\n      (poids_criticite * poids_fiabilite * poids_recence * confiance)::numeric,\n      2\n    ) AS score_priorite\n  FROM ponderation\n  WHERE date_publication > NOW() - INTERVAL '7 days'\n  ORDER BY (poids_criticite * poids_fiabilite * poids_recence * confiance) DESC,\n           date_publication DESC\n  LIMIT 10\n),\nsection_mois AS (\n  SELECT \n    *,\n    'recap_mois' AS section,\n    2 AS ordre_section,\n    ROUND(\n      (poids_criticite * confiance)::numeric,\n      2\n    ) AS score_priorite\n  FROM ponderation\n  WHERE date_publication <= NOW() - INTERVAL '7 days'\n    AND date_publication > NOW() - INTERVAL '30 days'\n    AND article_id NOT IN (SELECT article_id FROM section_semaine)\n  ORDER BY (poids_criticite * confiance) DESC,\n           date_publication DESC\n  LIMIT 10\n)\nSELECT * FROM section_semaine\nUNION ALL\nSELECT * FROM section_mois\nORDER BY ordre_section ASC, score_priorite DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "7ec56430-a95e-43e0-a267-042dc7683e02",
+      "name": "1. Get synthèses pondérées",
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Récupération des items de la requête SQL ===\nconst allItems = $input.all().map(i => i.json);\n\n// === Séparation en 2 sections ===\nconst sectionSemaine = allItems.filter(i => i.section === 'actu_semaine');\nconst sectionMois = allItems.filter(i => i.section === 'recap_mois');\n\n// === Métadonnées du digest ===\nconst now = new Date();\nconst numeroSemaine = getISOWeek(now);\nconst annee = now.getFullYear();\nconst dateAffichage = now.toLocaleDateString('fr-FR', { \n  weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' \n});\nconst periodeDebut = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);\nconst periodeFin = now;\n\n// === Calculs agrégés ===\nconst totalArticles = allItems.length;\nconst coutTotal = allItems.reduce((sum, i) => sum + parseFloat(i.cout_euros || 0), 0);\nconst scoreMoyen = totalArticles > 0\n  ? allItems.reduce((sum, i) => sum + parseFloat(i.score_priorite || 0), 0) / totalArticles\n  : 0;\n\n// === Helpers ===\nfunction escapeHtml(str) {\n  if (!str) return '';\n  return String(str)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction getISOWeek(date) {\n  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));\n  const dayNum = d.getUTCDay() || 7;\n  d.setUTCDate(d.getUTCDate() + 4 - dayNum);\n  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));\n  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);\n}\n\nfunction badgeCriticite(criticite) {\n  const colors = {\n    'critique': '#dc2626', // rouge\n    'elevee':   '#ea580c', // orange\n    'moyenne':  '#ca8a04', // jaune\n    'faible':   '#65a30d'  // vert\n  };\n  const labels = {\n    'critique': 'CRITIQUE',\n    'elevee':   'ÉLEVÉE',\n    'moyenne':  'MOYENNE',\n    'faible':   'FAIBLE'\n  };\n  const color = colors[criticite] || '#6b7280';\n  const label = labels[criticite] || criticite.toUpperCase();\n  return `<span style=\"display:inline-block;padding:3px 8px;background:${color};color:#fff;font-size:10px;font-weight:bold;letter-spacing:0.5px;border-radius:3px;\">${label}</span>`;\n}\n\nfunction formatArticle(item, index) {\n  const dateArticle = new Date(item.date_publication).toLocaleDateString('fr-FR', {\n    day: 'numeric', month: 'short', year: 'numeric'\n  });\n  \n  // Citations\n  let citationsHtml = '';\n  if (item.citations && Array.isArray(item.citations) && item.citations.length > 0) {\n    citationsHtml = '<div style=\"margin-top:12px;padding-left:12px;border-left:3px solid #e5e7eb;\">';\n    item.citations.forEach(c => {\n      if (c && c.texte) {\n        const verifIcon = c.verifiee ? '✓' : '?';\n        const verifColor = c.verifiee ? '#16a34a' : '#ca8a04';\n        citationsHtml += `\n          <div style=\"margin:6px 0;font-size:13px;color:#4b5563;font-style:italic;\">\n            <span style=\"color:${verifColor};font-weight:bold;margin-right:4px;\">${verifIcon}</span>\n            « ${escapeHtml(c.texte)} »\n            ${c.contexte ? `<div style=\"font-style:normal;font-size:11px;color:#6b7280;margin-top:2px;\">${escapeHtml(c.contexte)}</div>` : ''}\n          </div>`;\n      }\n    });\n    citationsHtml += '</div>';\n  }\n  \n  return `\n    <div style=\"margin:24px 0;padding:16px;background:#fafafa;border:1px solid #e5e7eb;border-radius:6px;\">\n      <div style=\"margin-bottom:8px;\">\n        ${badgeCriticite(item.criticite)}\n        <span style=\"margin-left:8px;font-size:11px;color:#6b7280;\">${escapeHtml(item.source_nom)} — ${dateArticle}</span>\n        <span style=\"float:right;font-size:11px;color:#6b7280;\">Score : ${item.score_priorite}</span>\n      </div>\n      <h3 style=\"margin:8px 0;font-size:15px;color:#111827;line-height:1.4;\">\n        ${escapeHtml(item.titre)}\n      </h3>\n      <div style=\"margin:8px 0;font-size:13px;color:#374151;font-weight:500;\">\n        ${escapeHtml(item.tldr || '')}\n      </div>\n      <div style=\"margin:8px 0;font-size:13px;color:#4b5563;line-height:1.6;\">\n        ${escapeHtml(item.contenu_synthese || '').replace(/\\n/g, '<br>')}\n      </div>\n      ${citationsHtml}\n      <div style=\"margin-top:10px;font-size:11px;color:#6b7280;\">\n        <a href=\"${escapeHtml(item.url)}\" style=\"color:#2563eb;text-decoration:none;\">→ Source originale</a>\n        &nbsp;·&nbsp;\n        Confiance IA : ${(parseFloat(item.confiance || 0) * 100).toFixed(0)}%\n        &nbsp;·&nbsp;\n        ${item.citations_verifiees || 0} citation${(item.citations_verifiees || 0) > 1 ? 's' : ''} vérifiée${(item.citations_verifiees || 0) > 1 ? 's' : ''}\n      </div>\n    </div>`;\n}\n\n// === Construction du HTML ===\nconst articlesSemaineHtml = sectionSemaine.length > 0\n  ? sectionSemaine.map(formatArticle).join('')\n  : '<div style=\"padding:24px;text-align:center;color:#6b7280;font-style:italic;background:#fafafa;border-radius:6px;\">Pas d\\'actualité majeure cette semaine. Consulter le récap mensuel ci-dessous pour les sujets à retenir.</div>';\n\nconst articlesMoisHtml = sectionMois.length > 0\n  ? sectionMois.map(formatArticle).join('')\n  : '<div style=\"padding:24px;text-align:center;color:#6b7280;font-style:italic;\">Aucun article complémentaire à signaler ce mois.</div>';\n\n// === HTML COMPLET ===\nconst html = `<!DOCTYPE html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>VeilleGRC — Digest semaine ${numeroSemaine}</title>\n</head>\n<body style=\"margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#111827;\">\n<div style=\"max-width:720px;margin:0 auto;padding:24px;background:#ffffff;\">\n\n  <!-- Header -->\n  <div style=\"border-bottom:3px solid #1f2937;padding-bottom:16px;margin-bottom:24px;\">\n    <div style=\"font-size:11px;color:#6b7280;letter-spacing:1.5px;font-weight:bold;\">VEILLEGRC — HEDGEWOOD CONSEIL</div>\n    <h1 style=\"margin:8px 0;font-size:28px;color:#111827;font-weight:bold;\">\n      Digest hebdomadaire — Semaine ${numeroSemaine} / ${annee}\n    </h1>\n    <div style=\"font-size:13px;color:#4b5563;\">${dateAffichage}</div>\n  </div>\n\n  <!-- Mention IA -->\n  <div style=\"margin:16px 0;padding:12px;background:#eff6ff;border-left:3px solid #2563eb;font-size:12px;color:#1e3a8a;\">\n    <strong>⚠ Document généré automatiquement par IA.</strong>\n    Synthèses produites par Claude Sonnet 4.6 à partir de sources institutionnelles publiques.\n    Citations vérifiées automatiquement contre le contenu source.\n    Avant diffusion : revue humaine systématique requise (POL-IA-001 §6).\n  </div>\n\n  <!-- Section 1 : Actualités de la semaine -->\n  <h2 style=\"margin:32px 0 16px 0;padding-bottom:8px;border-bottom:1px solid #d1d5db;font-size:20px;color:#111827;\">\n    📰 Actualités de la semaine\n    <span style=\"float:right;font-size:13px;color:#6b7280;font-weight:normal;\">${sectionSemaine.length} entrée${sectionSemaine.length > 1 ? 's' : ''}</span>\n  </h2>\n  ${articlesSemaineHtml}\n\n  <!-- Section 2 : Récap du mois -->\n  <h2 style=\"margin:40px 0 16px 0;padding-bottom:8px;border-bottom:1px solid #d1d5db;font-size:20px;color:#111827;\">\n    📊 Récap du mois — Top par sévérité\n    <span style=\"float:right;font-size:13px;color:#6b7280;font-weight:normal;\">${sectionMois.length} entrée${sectionMois.length > 1 ? 's' : ''}</span>\n  </h2>\n  ${articlesMoisHtml}\n\n  <!-- Footer -->\n  <div style=\"margin-top:48px;padding-top:24px;border-top:1px solid #d1d5db;font-size:11px;color:#6b7280;line-height:1.6;\">\n    <strong>Métriques du digest :</strong><br>\n    ${totalArticles} article${totalArticles > 1 ? 's' : ''} • Score moyen ${scoreMoyen.toFixed(2)} • Coût IA cumulé ${coutTotal.toFixed(4)} €<br><br>\n    <strong>Sources institutionnelles :</strong> CERT-FR, ANSSI, CNIL<br>\n    <strong>Conformité :</strong> ISO 27001, ISO 42001, RGPD, AI Act art.50<br><br>\n    <em>VeilleGRC-Agent v1.0 — Pipeline Ingestion → Classification (Haiku 4.5) → Synthèse (Sonnet 4.6)</em>\n  </div>\n\n</div>\n</body>\n</html>`;\n\n// === Sujet d'email pré-construit ===\nconst sujet = sectionSemaine.length > 0\n  ? `[VeilleGRC] Digest S${numeroSemaine} — ${sectionSemaine.length} actu${sectionSemaine.length > 1 ? 's' : ''} + ${sectionMois.length} récap mensuel`\n  : `[VeilleGRC] Digest S${numeroSemaine} — Récap mensuel (${sectionMois.length} entrées)`;\n\n// === Métadonnées de pondération pour audit ===\nconst ponderationDetails = {\n  formule_actu_semaine: 'poids_criticite × poids_fiabilite × poids_recence × confiance',\n  formule_recap_mois: 'poids_criticite × confiance (récence neutralisée)',\n  poids_criticite: { critique: 100, elevee: 50, moyenne: 20, faible: 5 },\n  poids_fiabilite: { ANSSI: 1.0, CNIL: 1.0, CERT_FR: 1.0, autres: 0.6 },\n  poids_recence: { '<1j': 1.0, '1-3j': 0.8, '4-7j': 0.5, '8-14j': 0.3, '>14j': 0.2 }\n};\n\n// === Article IDs pour stockage en base ===\nconst articleIds = allItems.map(i => i.article_id);\n\n// === Sortie ===\nreturn [{\n  json: {\n    type_digest: 'hebdo',\n    periode_debut: periodeDebut.toISOString(),\n    periode_fin: periodeFin.toISOString(),\n    nb_articles_inclus: totalArticles,\n    article_ids: articleIds,\n    contenu: html,\n    statut: 'genere',\n    score_moyen: scoreMoyen,\n    ponderation_details: ponderationDetails,\n    cout_total_euros: coutTotal,\n    sujet_email: sujet,\n    nb_actu_semaine: sectionSemaine.length,\n    nb_recap_mois: sectionMois.length\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "b9755a7b-e999-46aa-8c63-6b828079a3cf",
+      "name": "2. Génération HTML du digest",
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "maxTries": 2,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO digests (\n  type_digest,\n  periode_debut,\n  periode_fin,\n  nb_articles_inclus,\n  article_ids,\n  contenu,\n  statut,\n  score_moyen,\n  ponderation_details,\n  cout_total_euros,\n  sujet_email,\n  date_generation\n)\nVALUES (\n  '{{ $json.type_digest }}',\n  '{{ $json.periode_debut }}',\n  '{{ $json.periode_fin }}',\n  {{ $json.nb_articles_inclus }},\n  ARRAY[{{ $json.article_ids.join(',') }}]::integer[],\n  $$ {{ $json.contenu }} $$,\n  '{{ $json.statut }}',\n  {{ $json.score_moyen }},\n  '{{ JSON.stringify($json.ponderation_details).replace(/'/g, \"''\") }}'::jsonb,\n  {{ $json.cout_total_euros }},\n  '{{ $json.sujet_email.replace(/'/g, \"''\") }}',\n  NOW()\n)\nRETURNING id, type_digest, periode_debut, periode_fin, nb_articles_inclus, sujet_email, LENGTH(contenu) AS taille_html_chars;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        624,
+        0
+      ],
+      "id": "bb46a75b-0d26-43eb-9e1f-55cd1e8888c9",
+      "name": "Execute a SQL query",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const digestInfo = $input.item.json;\n\nconst message = `\n=== DIGEST GÉNÉRÉ AVEC SUCCÈS ===\nID base       : ${digestInfo.id}\nType          : ${digestInfo.type_digest}\nPériode       : ${digestInfo.periode_debut} → ${digestInfo.periode_fin}\nArticles      : ${digestInfo.nb_articles_inclus}\nSujet email   : ${digestInfo.sujet_email}\nTaille HTML   : ${digestInfo.taille_html_chars} caractères\n\nACTION REQUISE (humain) :\n1. Extraire le HTML : SELECT contenu FROM digests WHERE id = ${digestInfo.id}\n2. Relire et valider\n3. Copier-coller dans le client mail\n4. Envoyer aux destinataires\n\nConformité POL-IA-001 §6 : envoi non automatisé, validation humaine requise.\n`;\n\nconsole.log(message);\n\nreturn {\n  json: {\n    digest_id: digestInfo.id,\n    statut: 'prêt à valider',\n    message: message,\n    instructions_humain: [\n      'Extraire le HTML avec : SELECT contenu FROM digests WHERE id = ' + digestInfo.id,\n      'Relire et valider le contenu',\n      'Copier-coller dans le client mail',\n      'Envoyer aux destinataires'\n    ]\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "1821445c-5958-41a1-bfe9-73fd8354d78d",
+      "name": "4. Notification finale",
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger - Lundi 06h00": {
+      "main": [
+        [
+          {
+            "node": "1. Get synthèses pondérées",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Get synthèses pondérées": {
+      "main": [
+        [
+          {
+            "node": "2. Génération HTML du digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Génération HTML du digest": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "4. Notification finale",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "690ee1e4-4f75-48e3-9713-daac861222d7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dfe707d3cf56b96f4ed1fe1af47c5a662ea5a358332e78a115ad70ea8239fced"
+  },
+  "id": "rYKRGWS9OHLqusav",
+  "tags": []
+}

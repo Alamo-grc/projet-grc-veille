@@ -1,0 +1,195 @@
+{
+  "name": "03_Synthese_articles",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "63229467-b2bb-4aef-ade8-61253858c759",
+      "name": "Trigger - Daily 09h00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  a.id,\n  a.titre,\n  a.url,\n  a.contenu,\n  a.date_publication,\n  s.code AS source_code,\n  s.nom AS source_nom,\n  c.criticite,\n  array_to_string(c.thematiques, ',') AS thematiques\nFROM articles a\nJOIN sources s ON s.id = a.source_id\nJOIN classifications c ON c.article_id = a.id\nLEFT JOIN syntheses syn ON syn.article_id = a.id\nWHERE syn.id IS NULL\n  AND c.criticite IN ('critique', 'elevee')\n  AND c.score_pertinence >= 0.70\n  AND a.statut = 'ingested'\nORDER BY \n  CASE c.criticite WHEN 'critique' THEN 1 WHEN 'elevee' THEN 2 ELSE 3 END,\n  c.score_pertinence DESC\nLIMIT 5;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "7361fd25-3df0-4635-8c51-8e48530f8dbd",
+      "name": "1. Get articles à synthétiser",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-4-6\",\n  max_tokens: 800,\n  temperature: 0.2,\n  system: `Tu es un rédacteur expert en veille réglementaire et cybersécurité, intégré au système VeilleGRC-Agent du cabinet de conseil Hedgewood Conseil.\n\nTon rôle est de produire des synthèses RIGOUREUSES, FACTUELLES et SOURCÉES d'articles destinées à un digest hebdomadaire pour des consultants GRC.\n\n# Tâche\nPour chaque article, tu produis :\n1. Un TL;DR (100-150 caractères)\n2. Une synthèse détaillée (3-5 phrases, 300-700 caractères)\n3. Une liste de citations directes pour les FAITS SPÉCIFIQUES\n4. Un score de confiance (0.00 à 1.00)\n\n# Règles strictes\n1. NON-INFÉRENCE : pas d'information absente du texte source.\n2. CITATIONS HYBRIDES :\n   - OBLIGATOIRE pour : chiffre, montant, date précise, nom propre, référence légale, citation directe\n   - OPTIONNEL pour : phrases de mise en contexte, description générale\n   - REFORMULATION : si tu ne peux citer un fait, reformule en généralité\n3. REFUS PROPRE : si article < 200 chars utiles, retourne synthese_impossible=true\n4. STYLE : français pro, factuel, neutre, pas de superlatifs marketing\n5. SCORE :\n   - 0.90-1.00 : article riche, multiples citations\n   - 0.70-0.89 : article correct, 2-3 citations\n   - 0.50-0.69 : article basique\n   - <0.50 : à valider manuellement\n\n# Format JSON STRICT\nCas standard :\n{\"synthese_impossible\": false, \"tldr\": \"...\", \"synthese\": \"...\", \"citations\": [{\"texte\": \"...\", \"contexte\": \"...\"}], \"confiance\": 0.85}\n\nCas refus :\n{\"synthese_impossible\": true, \"raison\": \"...\", \"tldr\": null, \"synthese\": null, \"citations\": [], \"confiance\": 0.00}\n\n# Format de réponse OBLIGATOIRE\nTa réponse doit commencer DIRECTEMENT par le caractère \"{\" et terminer par \"}\".\nAUCUN texte avant le premier \"{\".\nAUCUN texte après le dernier \"}\".\nPAS de bloc markdown.\nPAS d'introduction.\n\nPremier caractère de ta réponse : {\nDernier caractère de ta réponse : }`,\n  messages: [\n    {\n      role: \"user\",\n      content: `TITRE : ${$json.titre}\\nSOURCE : ${$json.source_nom}\\nDATE : ${$json.date_publication}\\nURL : ${$json.url}\\nCRITICITÉ : ${$json.criticite}\\nTHÉMATIQUES : ${$json.thematiques}\\n\\nCONTENU :\\n${$json.contenu}`\n    }\n  ]\n}) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "d939ca5b-8868-44bc-b220-9e9dfae2e4cd",
+      "name": "2. Synthesize with Sonnet",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "anthropicApi": {
+          "id": "GW0aoYSRaEJcaokA",
+          "name": "Anthropic API - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// === Récupération de l'item courant (réponse Claude) ===\nconst item = $input.item.json;\n\n// === 1. Extraction du texte de la réponse ===\nconst rawText = item.content?.[0]?.text || '';\n\nif (!rawText) {\n  return {\n    json: {\n      synthese_error: true,\n      error_reason: 'empty_response',\n      claude_message_id: item.id || null\n    }\n  };\n}\n\n// === 2. Nettoyage markdown éventuel (PIÈGE-012 mitigation) ===\nlet cleanedText = rawText\n  .replace(/^```json\\s*/i, '')\n  .replace(/^```\\s*/i, '')\n  .replace(/\\s*```\\s*$/i, '')\n  .trim();\n\n// === 3. Parsing JSON ===\nlet synth;\ntry {\n  synth = JSON.parse(cleanedText);\n} catch (err) {\n  return {\n    json: {\n      synthese_error: true,\n      error_reason: 'json_parse_failed',\n      error_detail: err.message,\n      claude_message_id: item.id || null,\n      raw_text: cleanedText.substring(0, 500)\n    }\n  };\n}\n\n// === 4. Récupération de l'article original ===\nconst articleData = $('1. Get articles à synthétiser').item.json;\n\n// === 5. Cas synthèse impossible — retour propre ===\nif (synth.synthese_impossible === true) {\n  return {\n    json: {\n      article_id: articleData.id,\n      synthese_impossible: true,\n      raison_impossible: synth.raison || 'Non spécifié',\n      tldr: null,\n      contenu_synthese: null,\n      citations: [],\n      confiance: 0,\n      citations_verifiees: 0,\n      citations_a_verifier: 0,\n      modele_utilise: item.model || 'claude-sonnet-4-6',\n      tokens_input: item.usage?.input_tokens || 0,\n      tokens_output: item.usage?.output_tokens || 0,\n      cout_euros: ((item.usage?.input_tokens || 0) / 1000000 * 3 + (item.usage?.output_tokens || 0) / 1000000 * 15) * 0.93,\n      claude_message_id: item.id || null,\n      synthese_error: false\n    }\n  };\n}\n\n// === 6. Validation de structure pour cas standard ===\nconst errors = [];\nif (typeof synth.tldr !== 'string') errors.push('tldr manquant');\nif (typeof synth.synthese !== 'string') errors.push('synthese manquante');\nif (!Array.isArray(synth.citations)) errors.push('citations non-tableau');\nif (typeof synth.confiance !== 'number') errors.push('confiance invalide');\n\nif (errors.length > 0) {\n  return {\n    json: {\n      synthese_error: true,\n      error_reason: 'validation_failed',\n      error_detail: errors.join(' | '),\n      raw_synthese: synth,\n      claude_message_id: item.id || null,\n      article_id: articleData.id\n    }\n  };\n}\n\n// === 7. Normalisation Unicode pour vérification des citations ===\nfunction normalizeText(text) {\n  if (!text) return '';\n  return text\n    // Décode entités HTML basiques\n    .replace(/&amp;nbsp;/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;/g, \"'\")\n    // Apostrophes typographiques → droites\n    .replace(/[\\u2018\\u2019]/g, \"'\")\n    // Guillemets typographiques → droits\n    .replace(/[\\u201C\\u201D]/g, '\"')\n    // Espaces non-breaking, fines, etc. → espace simple\n    .replace(/[\\u00A0\\u202F\\u2009]/g, ' ')\n    // Multi-espaces → un seul\n    .replace(/\\s+/g, ' ')\n    .toLowerCase()\n    .trim();\n}\n\n// === 8. Vérification de chaque citation contre TOUTES les métadonnées source ===\n// Ce périmètre étendu (contenu + titre + url) reflète ce qui a été passé\n// à l'IA dans le prompt user. Évite les faux positifs sur les références\n// (numéros d'avis CERT-FR, IDs présents dans l'URL, etc.).\nconst sourceComplete = [\n  articleData.contenu || '',\n  articleData.titre || '',\n  articleData.url || ''\n].join(' | ');\n\nconst sourceNorm = normalizeText(sourceComplete);\nlet citationsVerifiees = 0;\nlet citationsAVerifier = 0;\n\nconst citationsAvecVerif = synth.citations.map(c => {\n  const citNorm = normalizeText(c.texte);\n  const present = sourceNorm.includes(citNorm);\n  if (present) {\n    citationsVerifiees++;\n  } else {\n    citationsAVerifier++;\n  }\n  return {\n    texte: c.texte,\n    contexte: c.contexte || '',\n    verifiee: present\n  };\n});\n\n// === 9. Calcul du coût ===\nconst inputTokens = item.usage?.input_tokens || 0;\nconst outputTokens = item.usage?.output_tokens || 0;\n// Sonnet 4.6 : 3 $/Mtokens input, 15 $/Mtokens output\nconst coutUsd = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);\nconst coutEuros = coutUsd * 0.93;\n\n// === 10. Construction de l'objet final ===\nreturn {\n  json: {\n    article_id: articleData.id,\n    synthese_impossible: false,\n    raison_impossible: null,\n    tldr: synth.tldr,\n    contenu_synthese: synth.synthese,\n    citations: citationsAvecVerif,\n    confiance: synth.confiance,\n    citations_verifiees: citationsVerifiees,\n    citations_a_verifier: citationsAVerifier,\n    modele_utilise: item.model || 'claude-sonnet-4-6',\n    tokens_input: inputTokens,\n    tokens_output: outputTokens,\n    cout_euros: coutEuros,\n    claude_message_id: item.id || null,\n    synthese_error: false\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "a6c99469-c785-45b9-bc8f-3413d37caeb8",
+      "name": "3. Parse + Validate + Verify",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO syntheses (\n  article_id,\n  tldr,\n  contenu_synthese,\n  citations,\n  confiance,\n  synthese_impossible,\n  raison_impossible,\n  citations_verifiees,\n  citations_a_verifier,\n  modele_utilise,\n  tokens_input,\n  tokens_output,\n  cout_euros,\n  claude_message_id,\n  valide_par_humain\n)\nSELECT\n  {{ $json.article_id }},\n  {{ $json.tldr ? \"'\" + $json.tldr.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  {{ $json.contenu_synthese ? \"'\" + $json.contenu_synthese.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  '{{ JSON.stringify($json.citations).replace(/'/g, \"''\") }}'::jsonb,\n  {{ $json.confiance ?? 0 }},\n  {{ $json.synthese_impossible }},\n  {{ $json.raison_impossible ? \"'\" + $json.raison_impossible.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  {{ $json.citations_verifiees ?? 0 }},\n  {{ $json.citations_a_verifier ?? 0 }},\n  '{{ $json.modele_utilise }}',\n  {{ $json.tokens_input ?? 0 }},\n  {{ $json.tokens_output ?? 0 }},\n  {{ $json.cout_euros ?? 0 }},\n  {{ $json.claude_message_id ? \"'\" + $json.claude_message_id + \"'\" : 'NULL' }},\n  FALSE\nWHERE NOT EXISTS (\n  SELECT 1 FROM syntheses WHERE article_id = {{ $json.article_id }}\n)\nRETURNING id, article_id, tldr, citations_verifiees, citations_a_verifier;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        832,
+        0
+      ],
+      "id": "ab24ec42-7241-4a61-9730-2b4063243803",
+      "name": "4. Insert synthèse",
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger - Daily 09h00": {
+      "main": [
+        [
+          {
+            "node": "1. Get articles à synthétiser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Get articles à synthétiser": {
+      "main": [
+        [
+          {
+            "node": "2. Synthesize with Sonnet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Synthesize with Sonnet": {
+      "main": [
+        [
+          {
+            "node": "3. Parse + Validate + Verify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Parse + Validate + Verify": {
+      "main": [
+        [
+          {
+            "node": "4. Insert synthèse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "9586f0c8-441e-4613-829c-c5c578c4d728",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dfe707d3cf56b96f4ed1fe1af47c5a662ea5a358332e78a115ad70ea8239fced"
+  },
+  "id": "U2SIb05OvTqsuPye",
+  "tags": []
+}

@@ -1,0 +1,186 @@
+{
+  "name": "02_Classification_articles",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "e3ab405e-8913-4a81-853e-2c8aef4b6479",
+      "name": "Trigger - Daily 08h30"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  a.id,\n  a.titre,\n  a.url,\n  a.contenu,\n  a.date_publication,\n  s.code AS source_code,\n  s.nom AS source_nom\nFROM articles a\nJOIN sources s ON s.id = a.source_id\nLEFT JOIN classifications c ON c.article_id = a.id\nWHERE c.id IS NULL\n  AND a.statut = 'ingested'\nORDER BY a.date_publication DESC NULLS LAST\nLIMIT 10;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "23ed9ef0-f7c8-48ec-bc02-7e76de6efaf8",
+      "name": "1. Get articles non classifiés",
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-haiku-4-5\",\n  max_tokens: 300,\n  temperature: 0.0,\n  system: `Tu es un classifieur expert en veille réglementaire et cybersécurité, intégré au système VeilleGRC-Agent du cabinet de conseil Hedgewood Conseil.\n\nTon rôle est d'analyser un article et de produire une classification structurée, fiable et auditable.\n\n# Référentiel de thématiques (utilise UNIQUEMENT ces valeurs)\n\"rgpd\", \"cyber\", \"vulnerabilites\", \"ai_act\", \"nis2\", \"dora\", \"iso_27001\", \"iso_42001\", \"incident\", \"sanction\", \"doctrine\", \"autre\"\n\n# Niveaux de criticité\n- \"critique\" : action immédiate (CVE explicitement critique ou exploitée, JO délai court)\n- \"elevee\" : impact significatif (CVSS >= 7 explicite, directive entrant en vigueur)\n- \"moyenne\" : information utile (avis CERT-FR sans détails de gravité, doctrine, mise à jour de norme)\n- \"faible\" : information de contexte (annonce, retour d'expérience général)\n\n# Score de pertinence : 0.00 à 1.00 (deux décimales)\n\n# Règles strictes\n1. Tu réponds UNIQUEMENT en JSON valide brut, sans markdown ni texte autour.\n2. Tu utilises EXCLUSIVEMENT les valeurs des référentiels ci-dessus.\n3. NON-INFÉRENCE : tu classes UNIQUEMENT sur la base de ce que dit l'article.\n4. PRINCIPE DE PRUDENCE : si tu hésites, tu choisis le niveau de criticité le plus bas.\n5. Le champ \"justification\" doit faire entre 50 et 150 caractères. Une seule phrase factuelle.\n\nTu réponds avec EXACTEMENT cette structure JSON :\n{\"thematiques\": [\"...\"], \"criticite\": \"...\", \"score_pertinence\": 0.XX, \"justification\": \"...\"}`,\n  messages: [\n    {\n      role: \"user\",\n      content: `TITRE : ${$json.titre}\\nSOURCE : ${$json.source_nom}\\nDATE : ${$json.date_publication}\\nURL : ${$json.url}\\n\\nCONTENU :\\n${$json.contenu || $json.titre}`\n    },\n    {\n      role: \"assistant\",\n      content: \"{\"\n    }\n  ]\n}) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "ca2b4777-87c3-4653-ae98-f2cd84fcb7a0",
+      "name": "2. Classify with Claude",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 300,
+      "credentials": {
+        "anthropicApi": {
+          "id": "GW0aoYSRaEJcaokA",
+          "name": "Anthropic API - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// === Récupération de l'item courant (réponse Claude) ===\nconst item = $input.item.json;\n\n// === 1. Extraction du texte de la réponse ===\nconst rawText = item.content?.[0]?.text || '';\n\nif (!rawText) {\n  // Réponse Claude vide : on log et on rejette l'item\n  return {\n    json: {\n      classification_error: true,\n      error_reason: 'empty_response',\n      claude_message_id: item.id || null,\n      raw_response: JSON.stringify(item).substring(0, 500)\n    }\n  };\n}\n\n// === 2. Reconstitution du JSON (le { initial a été préfillé côté assistant) ===\nconst fullJson = '{' + rawText;\n\n// === 3. Parsing ===\nlet classification;\ntry {\n  classification = JSON.parse(fullJson);\n} catch (err) {\n  return {\n    json: {\n      classification_error: true,\n      error_reason: 'json_parse_failed',\n      error_detail: err.message,\n      claude_message_id: item.id || null,\n      raw_text: fullJson.substring(0, 500)\n    }\n  };\n}\n\n// === 4. Validation des champs (référentiels fermés) ===\nconst VALID_THEMATIQUES = ['rgpd', 'cyber', 'vulnerabilites', 'ai_act', 'nis2', 'dora', 'iso_27001', 'iso_42001', 'incident', 'sanction', 'doctrine', 'autre'];\nconst VALID_CRITICITES = ['faible', 'moyenne', 'elevee', 'critique'];\n\nconst errors = [];\n\n// Thématiques : doivent toutes être dans le référentiel\nif (!Array.isArray(classification.thematiques) || classification.thematiques.length === 0) {\n  errors.push('thematiques manquantes ou non-tableau');\n} else {\n  const invalidThematiques = classification.thematiques.filter(t => !VALID_THEMATIQUES.includes(t));\n  if (invalidThematiques.length > 0) {\n    errors.push(`thematiques invalides: ${invalidThematiques.join(', ')}`);\n  }\n}\n\n// Criticité\nif (!VALID_CRITICITES.includes(classification.criticite)) {\n  errors.push(`criticite invalide: ${classification.criticite}`);\n}\n\n// Score de pertinence\nconst score = parseFloat(classification.score_pertinence);\nif (isNaN(score) || score < 0 || score > 1) {\n  errors.push(`score_pertinence invalide: ${classification.score_pertinence}`);\n}\n\n// Justification\nif (typeof classification.justification !== 'string' || classification.justification.length < 10) {\n  errors.push('justification trop courte ou manquante');\n}\n\n// === 5. Si erreurs de validation, on flag mais on retourne quand même ===\nif (errors.length > 0) {\n  return {\n    json: {\n      classification_error: true,\n      error_reason: 'validation_failed',\n      error_detail: errors.join(' | '),\n      raw_classification: classification,\n      claude_message_id: item.id || null\n    }\n  };\n}\n\n// === 6. Récupération des données de l'article original (depuis le nœud 1) ===\n// On utilise $('1. Get articles non classifiés') pour aller chercher les données amont\nconst articleData = $('1. Get articles non classifiés').item.json;\n\n// === 7. Construction de l'objet final pour l'INSERT ===\nreturn {\n  json: {\n    // Lien vers l'article\n    article_id: articleData.id,\n    \n    // Champs de classification (table classifications)\n    thematiques: classification.thematiques,\n    criticite: classification.criticite,\n    score_pertinence: score,\n    justification: classification.justification,\n    \n    // Tracking technique (audit + coût)\n    modele_utilise: item.model || 'claude-haiku-4-5',\n    tokens_input: item.usage?.input_tokens || 0,\n    tokens_output: item.usage?.output_tokens || 0,\n    cout_euros: ((item.usage?.input_tokens || 0) / 1000000 * 1 + (item.usage?.output_tokens || 0) / 1000000 * 5) * 0.93, // approximation USD→EUR\n    claude_message_id: item.id,\n    \n    // Pour debug si besoin\n    classification_error: false\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "550f6620-6563-4f98-bf24-abbd1ee56c95",
+      "name": "3. Parse + Validate"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO classifications (\n  article_id,\n  thematiques,\n  criticite,\n  score_pertinence,\n  justification,\n  modele_utilise,\n  tokens_input,\n  tokens_output,\n  cout_euros\n)\nSELECT\n  {{ $json.article_id }},\n  ARRAY[{{ $json.thematiques.map(t => `'${t}'`).join(',') }}]::TEXT[],\n  '{{ $json.criticite }}',\n  {{ $json.score_pertinence }},\n  '{{ $json.justification.replace(/'/g, \"''\") }}',\n  '{{ $json.modele_utilise }}',\n  {{ $json.tokens_input }},\n  {{ $json.tokens_output }},\n  {{ $json.cout_euros }}\nWHERE NOT EXISTS (\n  SELECT 1 FROM classifications WHERE article_id = {{ $json.article_id }}\n)\nRETURNING id, article_id, criticite, score_pertinence;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        832,
+        0
+      ],
+      "id": "bd0957b0-9f6b-4b4e-b67d-780cad04cc31",
+      "name": "4. Insert classification",
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger - Daily 08h30": {
+      "main": [
+        [
+          {
+            "node": "1. Get articles non classifiés",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Get articles non classifiés": {
+      "main": [
+        [
+          {
+            "node": "2. Classify with Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Classify with Claude": {
+      "main": [
+        [
+          {
+            "node": "3. Parse + Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Parse + Validate": {
+      "main": [
+        [
+          {
+            "node": "4. Insert classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "abbb5597-6a10-4c3d-84ac-b4abd045086b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "dfe707d3cf56b96f4ed1fe1af47c5a662ea5a358332e78a115ad70ea8239fced"
+  },
+  "id": "EV5IarZfYY3zy7Cm",
+  "tags": []
+}
