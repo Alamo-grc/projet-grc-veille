@@ -11,6 +11,7 @@
 *.key
 *.pem
 *.p12
+*.crt
 secrets/
 credentials/
 
