@@ -25,7 +25,7 @@ Le Sprint 4 vise la **maturité opérationnelle** du système VeilleGRC-Agent, �
 |---|---|---|
 | **4.1.A** | ✅ Terminé | HTTPS via Caddy (DEROG-001 clôturée) |
 | **4.1.B** | ✅ Terminé | Sauvegardes hebdomadaires (test manuel OK, cron corrigé, DEROG-004 documentée) |
-| **4.1.C** | ⏳ À venir | Notifications d'erreur workflows n8n |
+| **4.1.C** | ✅ Terminé | Notifications d'erreur workflows n8n (DB + email via Brevo) |
 | **4.2.A** | ⏳ À venir | Fetch contenu complet articles RSS |
 | **4.2.B** | ⏳ À venir | Design digest amélioré |
 | **4.3.A** | ⏳ À venir | Tests prompt injection |
@@ -189,9 +189,84 @@ Le Sprint 4 vise la **maturité opérationnelle** du système VeilleGRC-Agent, �
 
 ---
 
-## Sprint 4.1.C — Notifications d'erreur n8n (⏳ à venir)
+## Sprint 4.1.C — Notifications d'erreur n8n ✅
 
-[À documenter au fur et à mesure]
+**Date** : 2026-09-05
+**Objectif** : Détecter et notifier automatiquement toute panne technique sur les 4 workflows de production, journaliser l'incident en base, clôturer POL-IA-001 §11 (procédure incident) côté détection technique.
+
+### Accès infrastructure (préalable)
+
+- **DÉC-051** : Mise en place d'un accès SSH par clé dédiée (`id_ed25519_veillegrc`, sans passphrase) depuis le poste Windows vers la VM, en remplacement de l'authentification par mot de passe interactive. Alias `veillegrc` ajouté dans `~/.ssh/config` avec l'IP à jour (192.168.1.26, DHCP avait changé depuis README).
+  Justification : permet un pilotage non-interactif de la VM (Claude Code) sans jamais faire transiter le mot de passe du compte `mounir` dans une session de chat.
+- **DÉC-052** : `sudo` sans mot de passe (`/etc/sudoers.d/mounir-nopasswd`) accordé à `mounir` sur la VM, cohérent avec son appartenance déjà existante au groupe `sudo`.
+  Risque accepté : accès complet root depuis toute session authentifiée par la clé SSH dédiée — jugé acceptable pour une VM de POC sur LAN privé.
+
+### Architecture retenue
+
+Nouveau workflow **`05_Notifications_Erreur`** (Error Trigger natif n8n), configuré comme *Error Workflow* des 4 workflows de production (01 à 04) :
+
+```
+Error Trigger → Formater incident (Code) ──┬──→ Logger incident_ia (Postgres INSERT)
+                                            └──→ Notifier via Brevo (HTTP Request)
+```
+
+- **Formater incident** : extrait `workflow.name`, `execution.lastNodeExecuted`, `execution.error.message` du payload natif de l'Error Trigger et les met en forme.
+- **Logger incident_ia** : réutilise la table `incidents_ia` existante (créée en Sprint 3, prévue pour le journal d'incidents IA de POL-IA-001 §11) avec `type_incident='defaillance_technique'`, `detecte_par='n8n_error_workflow_automatique'`, `statut='open'`.
+- **Notifier via Brevo** : appel HTTPS à l'API transactionnelle Brevo (`api.brevo.com/v3/smtp/email`), credential `HTTP Header Auth` (header `api-key`).
+
+### Décisions techniques (DÉC)
+
+- **DÉC-053** : Canal de notification email choisi = **API HTTP Brevo**, et non SMTP direct.
+  Cause : le SMTP sortant (ports 587 *et* 465, IPv4 *et* IPv6) est bloqué de façon silencieuse entre la VM et Gmail — probablement un filtrage anti-spam de la box/FAI (diagnostiqué par comparaison : le même handshake TLS réussit depuis l'hôte Windows, échoue systématiquement depuis la VM). Basculer sur une API HTTPS (port 443 standard) contourne ce blocage sans toucher à la configuration réseau du domicile.
+- **DÉC-054** : Réutilisation de la table `incidents_ia` existante plutôt que création d'une table dédiée aux pannes techniques — cohérent avec l'esprit "journal des incidents IA unifié" de POL-IA-001 §11.
+- **DÉC-055** : Ajout explicite de `"onError": "stopWorkflow"` sur les nœuds critiques dépourvus de ce réglage dans les 4 workflows de production :
+  - `01_Ingestion_RSS` → *Get sources actives* (lecture initiale)
+  - `02_Classification_articles` → *1. Get articles non classifiés* (lecture initiale) et *4. Insert classification* (écriture finale)
+  - `03_Synthese_articles` → *1. Get articles à synthétiser* (lecture initiale) et *4. Insert synthèse* (écriture finale)
+  - `04_Digest_hebdo` → *Execute a SQL query* (écriture finale)
+  Justification : voir PIÈGE-023 ci-dessous — sans ce réglage explicite, ces nœuds échouaient silencieusement sans jamais déclencher d'alerte. Les nœuds intrinsèquement tolérants (fetch RSS par flux, appels API Claude, upserts `ON CONFLICT`) restent en `continueRegularOutput` pour ne pas bloquer tout un lot pour un item isolé.
+
+### Pièges identifiés (PIÈGE)
+
+- **PIÈGE-021** : SMTP sortant bloqué silencieusement par la box/FAI, y compris en IPv6, alors que le handshake TCP réussit (`nc` reporte le port "open"). Le blocage n'apparaît qu'au niveau de la négociation TLS applicative (timeout total, aucune donnée échangée). Diagnostiqué en comparant avec un test identique réussi depuis le poste Windows hôte (même réseau, chemin différent). Voir DÉC-053.
+- **PIÈGE-022** : `n8n import:workflow` désactive systématiquement le workflow importé ("Remember to activate later"), et `n8n publish:workflow` ne prend effet qu'après un redémarrage complet du conteneur n8n (`docker restart`). Prévoir ce cycle (import → publish → restart) à chaque modification de workflow en ligne de commande.
+- **PIÈGE-023** : Un nœud PostgreSQL n8n **sans** `onError` explicite n'arrête PAS le workflow en cas d'erreur SQL réelle (ex : table inexistante) — il capture l'erreur et la restitue comme sortie JSON normale (`executionStatus: "success"`, erreur de niveau "warning" dans les données). Comportement contre-intuitif découvert en testant volontairement une panne sur `04_Digest_hebdo` : l'exécution était rapportée "réussie" malgré l'échec réel de la requête. Résolu via DÉC-055.
+- **PIÈGE-024** : Dans le nœud HTTP Request, le champ "JSON Body" en mode expression nécessite la syntaxe complète `={{ <expression JS> }}` — un simple préfixe `=<expression>` (sans les doubles accolades) est traité comme du **texte littéral**, pas comme une expression à évaluer, ce qui produit une erreur "not valid JSON" ou envoie des `{{ }}` non résolus tels quels (voir OBSERVATION-005).
+- **PIÈGE-025** : L'Error Workflow configuré sur un workflow ne se déclenche **jamais** pour une exécution manuelle ("Execute workflow" dans l'éditeur) — uniquement pour les exécutions automatiques réelles (schedule, webhook, trigger). Le test de bout en bout du circuit d'alerte a donc été fait en exécutant directement `05_Notifications_Erreur` (avec un Manual Trigger temporaire), plutôt qu'en cascade depuis un workflow de production.
+
+### Observations (OBSERVATION)
+
+- **OBSERVATION-005** : Brevo réécrit silencieusement l'adresse d'expéditeur technique vers un domaine générique (`*.brevosend.com`) lorsque le domaine de l'expéditeur déclaré (ici `gmail.com`, un domaine "Freemail") ne peut pas être authentifié DKIM/DMARC par un tiers relais. Le dashboard Brevo signale ce cas ("Le domaine Freemail n'est pas recommandé"). Sans incidence bloquante pour ce POC (delivery confirmée après correction du template), mais à surveiller : pour une exploitation réelle, un domaine propre avec DKIM/DMARC configurés serait recommandé.
+
+### Test réalisé
+
+Test de bout en bout en 2 temps (voir PIÈGE-025) :
+1. Provocation d'une vraie erreur SQL sur `04_Digest_hebdo` (table cible temporairement renommée) → confirmation que l'exécution passe bien en statut `error` une fois `onError: stopWorkflow` appliqué (DÉC-055).
+2. Exécution directe de `05_Notifications_Erreur` (Manual Trigger temporaire → Formater incident) → vérifications :
+   - Ligne insérée dans `incidents_ia` (id=1, `type_incident=defaillance_technique`, `statut=open`)
+   - Email reçu sur l'adresse du responsable veille via Brevo (`Envoyé` → `Délivré` confirmé dans le dashboard Brevo Temps réel)
+
+Nettoyage post-test : requête SQL originale restaurée sur `04_Digest_hebdo`, Manual Trigger temporaire retiré de `05_Notifications_Erreur`, tous les workflows republiés et actifs.
+
+### Conformité démontrée
+
+| Référentiel | Démonstration |
+|---|---|
+| POL-IA-001 §11 | Détection et journalisation automatique des incidents techniques (étape 1 de la procédure) |
+| ISO 27001 A.5.24 | Planification de la gestion des incidents de sécurité (détection outillée) |
+| ISO 27001 A.5.26 | Réponse aux incidents (alerte immédiate au responsable du système) |
+| ISO 42001 §8.1 | Procédures opérationnelles documentées pour les défaillances du système IA |
+
+### Livrables produits
+
+- `workflows/n8n/05_Notifications_Erreur.json` (nouveau workflow — adresse email remplacée par un placeholder `responsable-veille@exemple.com` dans le repo public ; l'instance n8n déployée utilise la vraie adresse, configurée directement en base, pas via Git)
+- `workflows/n8n/01_Ingestion_RSS.json`, `02_Classification_articles.json`, `03_Synthese_articles.json`, `04_Digest_hebdo.json` (mis à jour : `settings.errorWorkflow` + `onError` explicite sur nœuds critiques)
+- Compte Brevo configuré (expéditeur vérifié, clé API)
+- Accès SSH par clé + sudo sans mot de passe sur la VM (outillage, hors périmètre applicatif)
+
+### Durée effective
+
+~2h30 (diagnostic réseau SMTP, itérations sur le format JSON Body, découverte et correction du comportement onError par défaut)
 
 ---
 

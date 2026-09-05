@@ -74,7 +74,8 @@
           "id": "fFXa3S4ugqbLq2Vz",
           "name": "PostgreSQL - VeilleGRC"
         }
-      }
+      },
+      "onError": "stopWorkflow"
     },
     {
       "parameters": {
@@ -109,7 +110,8 @@
       ],
       "id": "3bf4f881-c407-419b-b1e3-daa3f30955d0",
       "name": "Fetch RSS feed",
-      "retryOnFail": true
+      "retryOnFail": true,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -185,7 +187,6 @@
       "onError": "continueRegularOutput"
     }
   ],
-  "pinData": {},
   "connections": {
     "Trigger - Daily 08h": {
       "main": [
@@ -265,15 +266,15 @@
       ]
     }
   },
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate"
+    "binaryMode": "separate",
+    "errorWorkflow": "o4HRgzKMXymSUuB7"
   },
-  "versionId": "cf25c1d4-2806-4985-9a89-891b68b42cd6",
+  "versionId": "f79c186e-eace-4d33-94e3-903c299d5666",
   "meta": {
-    "templateCredsSetupCompleted": true,
-    "instanceId": "dfe707d3cf56b96f4ed1fe1af47c5a662ea5a358332e78a115ad70ea8239fced"
+    "templateCredsSetupCompleted": true
   },
   "id": "K21N0jgIxNHPiurY",
   "tags": []

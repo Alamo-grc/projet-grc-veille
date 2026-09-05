@@ -1,0 +1,121 @@
+{
+  "name": "05_Notifications_Erreur",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "a1e1c1a0-0001-4a1a-9a1a-000000000001",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const workflowName = $json.workflow?.name || 'Inconnu';\nconst nodeName = $json.execution?.lastNodeExecuted || 'Inconnu';\nconst errorMessage = $json.execution?.error?.message || 'Erreur sans message';\nconst executionUrl = $json.execution?.url || '';\nconst executionId = $json.execution?.id || '';\n\nreturn {\n  json: {\n    type_incident: 'defaillance_technique',\n    description: `Echec du workflow \"${workflowName}\" au noeud \"${nodeName}\": ${errorMessage} (execution ${executionId})`,\n    gravite: 'moyenne',\n    detecte_par: 'n8n_error_workflow_automatique',\n    workflow_name: workflowName,\n    node_name: nodeName,\n    error_message: errorMessage,\n    execution_url: executionUrl,\n    execution_id: executionId\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "a1e1c1a0-0002-4a1a-9a1a-000000000002",
+      "name": "Formater incident"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO incidents_ia (type_incident, description, gravite, detecte_par, statut)\nVALUES (\n  '{{ $json.type_incident }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  '{{ $json.gravite }}',\n  '{{ $json.detecte_par }}',\n  'open'\n)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "="
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        624,
+        -80
+      ],
+      "id": "a1e1c1a0-0003-4a1a-9a1a-000000000003",
+      "name": "Logger incident_ia",
+      "credentials": {
+        "postgres": {
+          "id": "fFXa3S4ugqbLq2Vz",
+          "name": "PostgreSQL - VeilleGRC"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.brevo.com/v3/smtp/email",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ sender: { email: \"responsable-veille@exemple.com\", name: \"VeilleGRC-Agent\" }, to: [{ email: \"responsable-veille@exemple.com\" }], subject: \"🚨 [VeilleGRC] Erreur workflow : \" + $json.workflow_name, textContent: \"Une erreur technique a été détectée dans le pipeline VeilleGRC-Agent.\\n\\nWorkflow : \" + $json.workflow_name + \"\\nNoeud en erreur : \" + $json.node_name + \"\\nMessage d'erreur : \" + $json.error_message + \"\\nID d'exécution : \" + $json.execution_id + \"\\nLien : \" + $json.execution_url + \"\\n\\nCet incident a été journalisé automatiquement dans la table incidents_ia (statut : open).\\n\\n---\\nNotification automatique — VeilleGRC-Agent (Sprint 4.1.C)\" }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        624,
+        80
+      ],
+      "id": "a1e1c1a0-0004-4a1a-9a1a-000000000004",
+      "name": "Notifier via Brevo",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PhGd60I6Nt5xwpOf",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Formater incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formater incident": {
+      "main": [
+        [
+          {
+            "node": "Logger incident_ia",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notifier via Brevo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "825c1698-7e40-44c6-90d8-38e5f014ee01",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "o4HRgzKMXymSUuB7",
+  "tags": []
+}
